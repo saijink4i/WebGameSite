@@ -615,6 +615,9 @@ function Room({ nickname }) {
                     const timestamp = new Date(msg.timestamp);
                     const formattedTime = `${timestamp.getHours().toString().padStart(2, '0')}:${timestamp.getMinutes().toString().padStart(2, '0')}:${timestamp.getSeconds().toString().padStart(2, '0')}:${timestamp.getMilliseconds().toString().padStart(3, '0')}`;
                     
+                    // 개인 메시지인지 확인 (서버에서 personal: true 플래그를 설정)
+                    const isPersonal = msg.personal === true;
+                    
                     return (
                       <div 
                         key={index} 

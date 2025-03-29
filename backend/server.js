@@ -201,6 +201,21 @@ io.on('connection', (socket) => {
       skipMessage: newJoinMessageId // 방금 입장 메시지 ID 전달 (클라이언트에서 필터링)
     });
 
+    // 개인 환영 메시지 전송 (본인에게만 표시)
+    const welcomeMessage = {
+      type: 'system',
+      message: `${nickname}님 즐거운 게임 되시기 바랍니다.`,
+      timestamp: new Date().toISOString()
+    };
+    
+    // 개인 환영 메시지는 채팅 히스토리에 저장하지 않고 현재 소켓에만 전송
+    console.log(`[개인 환영 메시지 전송] ${nickname}님에게 환영 메시지 전송`);
+    socket.emit('chatMessage', {
+      ...welcomeMessage,
+      roomId,
+      personal: true // 개인 메시지 플래그 추가
+    });
+
     // 방 정보 전송
     socket.emit('roomInfo', {
       id: room.id,

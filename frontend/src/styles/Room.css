@@ -402,6 +402,7 @@
   to { opacity: 1; transform: translateY(0); }
 }
 
+/* 시스템 메시지 스타일 복원 및 조정 */
 .system-message {
   align-self: center;
   background-color: #f1f3f5;
