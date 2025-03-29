@@ -2,9 +2,50 @@ import { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import axios from 'axios';
 import io from 'socket.io-client';
-import { FaUser, FaSignOutAlt, FaEye, FaGamepad, FaCog, FaTimes } from 'react-icons/fa';
+import { FaUser, FaSignOutAlt, FaEye, FaGamepad, FaCog, FaTimes, FaDice, FaPlayCircle } from 'react-icons/fa';
 import { toast } from 'react-toastify';
 import '../styles/Room.css';
+
+// 게임 타입 상수 정의
+const GAME_TYPES = {
+  ZOMBIE_DICE: 'ZOMBIE_DICE',
+  CAH: 'CAH',
+  CAH_ADULT: 'CAH_ADULT'
+};
+
+const GAME_INFO = {
+  [GAME_TYPES.ZOMBIE_DICE]: {
+    name: '좀비 다이스',
+    icon: <FaDice />,
+    color: 'success'
+  },
+  [GAME_TYPES.CAH]: {
+    name: '비인도적 카드게임',
+    icon: <FaPlayCircle />,
+    color: 'info'
+  },
+  [GAME_TYPES.CAH_ADULT]: {
+    name: '비인도적 카드게임 (18+)',
+    icon: <FaPlayCircle />,
+    color: 'danger'
+  }
+};
+
+const GAME_STATUS = {
+  WAITING: 'WAITING',
+  IN_PROGRESS: 'IN_PROGRESS'
+};
+
+const STATUS_INFO = {
+  [GAME_STATUS.WAITING]: {
+    label: '대기중',
+    color: 'info'
+  },
+  [GAME_STATUS.IN_PROGRESS]: {
+    label: '진행중',
+    color: 'warning'
+  }
+};
 
 function Room({ nickname }) {
   const { roomId } = useParams();
@@ -424,16 +465,29 @@ function Room({ nickname }) {
   
   // 게임 종목에 따른 태그 스타일 반환
   const getGameTypeTag = (gameType) => {
-    switch (gameType) {
-      case 'ZOMBIE_DICE':
-        return <span className="tag zombie-dice">좀비다이스</span>;
-      case 'UNO':
-        return <span className="tag uno">우노</span>;
-      case 'YACHT':
-        return <span className="tag yacht">요트다이스</span>;
-      default:
-        return <span className="tag">기타</span>;
+    if (!GAME_INFO[gameType]) {
+      return <span className="badge bg-secondary">기타</span>;
     }
+    
+    return (
+      <span className={`badge bg-${GAME_INFO[gameType].color}`}>
+        {GAME_INFO[gameType].icon}
+        <span className="ms-1">{GAME_INFO[gameType].name}</span>
+      </span>
+    );
+  };
+
+  // 방 상태에 따른 태그 스타일 반환
+  const getRoomStatusTag = (status) => {
+    if (!STATUS_INFO[status]) {
+      return <span className="badge bg-secondary">알 수 없음</span>;
+    }
+    
+    return (
+      <span className={`badge bg-${STATUS_INFO[status].color}`}>
+        {STATUS_INFO[status].label}
+      </span>
+    );
   };
 
   useEffect(() => {
@@ -459,6 +513,7 @@ function Room({ nickname }) {
         <div className="room-title-area">
           {getGameTypeTag(room.gameType)}
           <h2 className="room-title">{room.title}</h2>
+          {getRoomStatusTag(room.status)}
         </div>
         <div className="room-actions">
           {isHost() && (
@@ -819,8 +874,8 @@ function Room({ nickname }) {
                     }}
                   >
                     <option value="ZOMBIE_DICE">좀비다이스</option>
-                    <option value="UNO">우노</option>
-                    <option value="YACHT">요트다이스</option>
+                    <option value="CAH">비인도적 카드게임</option>
+                    <option value="CAH_ADULT">비인도적 카드게임 (18+)</option>
                   </select>
                 </div>
 

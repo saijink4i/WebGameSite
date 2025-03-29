@@ -395,24 +395,22 @@ function Lobby({ nickname: initialNickname, setNickname }) {
       <div className="list-group">
         {filterRooms(rooms).map(room => (
           <div key={room.id} className="list-group-item d-flex justify-content-between align-items-center">
-            <div className="d-flex align-items-center gap-3">
-              <div className="d-flex align-items-center gap-2">
-                <span className={`badge bg-${GAME_INFO[room.gameType].color}`}>
-                  {GAME_INFO[room.gameType].icon}
-                  <span className="ms-1">{GAME_INFO[room.gameType].name}</span>
-                </span>
-                <span className={`badge bg-${STATUS_INFO[room.status].color}`}>
-                  {STATUS_INFO[room.status].label}
-                </span>
-                {room.hasPassword && <FaLock className="text-secondary" />}
-                <span className="fw-semibold">{room.title || `${room.players[0]}의 방`}</span>
-              </div>
+            <div className="d-flex align-items-center flex-grow-1 gap-2">
+              <span className={`badge bg-${GAME_INFO[room.gameType].color}`}>
+                {GAME_INFO[room.gameType].icon}
+                <span className="ms-1">{GAME_INFO[room.gameType].name}</span>
+              </span>
+              {room.hasPassword && <FaLock className="text-secondary" />}
+              <span className="fw-semibold text-truncate">{room.title || `${room.players[0]}의 방`}</span>
+              <span className={`badge bg-${STATUS_INFO[room.status].color}`}>
+                {STATUS_INFO[room.status].label}
+              </span>
               <span className="badge bg-secondary">
                 {room.players.length}/{room.maxPlayers}명
               </span>
             </div>
             <button 
-              className="btn btn-outline-primary"
+              className="btn btn-outline-primary ms-2"
               onClick={() => joinRoom(room)}
               disabled={!canInteract || room.players.length >= room.maxPlayers}
             >
