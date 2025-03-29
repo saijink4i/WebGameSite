@@ -1,10 +1,12 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useContext, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import axios from 'axios';
 import io from 'socket.io-client';
 import { FaUser, FaSignOutAlt, FaEye, FaGamepad, FaCog, FaTimes, FaDice, FaPlayCircle } from 'react-icons/fa';
 import { toast } from 'react-toastify';
 import '../styles/Room.css';
+import { UserContext } from '../context/UserContext';
+import { SocketContext } from '../context/SocketContext';
 
 // 게임 타입 상수 정의
 const GAME_TYPES = {
@@ -66,277 +68,315 @@ function Room({ nickname }) {
     password: ''
   });
   const [kickConfirm, setKickConfirm] = useState({ show: false, nickname: null });
-  const socketRef = useRef();
+  const [isLoading, setIsLoading] = useState(true);
+  const hasJoinedRef = useRef(false);
+  const receivedRoomInfoRef = useRef(false);
+  const timeoutIdRef = useRef(null);
   const chatMessagesRef = useRef();
-  const hasJoinedRef = useRef(false); // 중복 joinRoom 요청 방지를 위한 플래그
-
+  
+  // 소켓 컨텍스트와 사용자 컨텍스트 사용
+  const socket = useContext(SocketContext);
+  const { userId } = useContext(UserContext);
+  
+  // 컴포넌트 언마운트 시 필요한 정리 작업을 수행하는 함수
+  const cleanupComponent = useCallback(() => {
+    // 타임아웃 정리
+    if (timeoutIdRef.current) {
+      clearTimeout(timeoutIdRef.current);
+      timeoutIdRef.current = null;
+    }
+    
+    // 소켓 이벤트 리스너 정리
+    if (socket) {
+      console.log('이벤트 리스너 정리 중...');
+      socket.off('roomInfo');
+      socket.off('error');
+      socket.off('chatMessage');
+      socket.off('chatHistory');
+      socket.off('playerJoined');
+      socket.off('playerLeft');
+      socket.off('playerStatusChanged');
+      socket.off('roomSettingsUpdated');
+      socket.off('kicked');
+      console.log('이벤트 리스너 정리 완료');
+    }
+  }, [socket]);
+  
+  // 컴포넌트 마운트 시 방 접속 및 이벤트 리스너 설정
   useEffect(() => {
     console.log('Room 컴포넌트 마운트 - 소켓 연결 및 이벤트 리스너 설정 시작');
     
-    // 이미 연결된 소켓이 있다면 재사용
-    if (!socketRef.current) {
-      console.log('소켓 생성: 새로운 소켓 연결을 생성합니다');
-      socketRef.current = io('http://localhost:3001');
-    } else if (!socketRef.current.connected) {
-      console.log('소켓 재연결: 연결이 끊긴 소켓을 다시 연결합니다');
-      socketRef.current.connect();
-    } else {
-      console.log('기존 소켓 사용: 이미 연결된 소켓을 재사용합니다');
+    // 로딩 상태 활성화
+    setIsLoading(true);
+    
+    // 로그 출력 - 추적용
+    console.log(`Room 컴포넌트 마운트: roomId=${roomId}, nickname=${nickname}, userId=${userId}, hasJoined=${hasJoinedRef.current}`);
+    
+    // 소켓이 아직 연결되지 않았거나 userId가 없으면 대기
+    if (!socket || !userId) {
+      console.log('소켓 또는 사용자 ID가 아직 준비되지 않음. 대기 중...');
+      return;
     }
+    
+    console.log(`소켓 연결 상태: ${socket.connected ? '연결됨' : '연결되지 않음'}, userId: ${userId}, roomId: ${roomId}`);
 
-    // 소켓 이벤트 리스너 설정 (중복 등록 방지를 위해 먼저 제거)
-    const setupEventListeners = () => {
-      // 기존 이벤트 리스너 제거
-      socketRef.current.off('roomInfo');
-      socketRef.current.off('error');
-      socketRef.current.off('chatMessage');
-      socketRef.current.off('chatHistory');
-      socketRef.current.off('playerJoined');
-      socketRef.current.off('playerLeft');
-      socketRef.current.off('playerStatusChanged');
-      socketRef.current.off('roomSettingsUpdated');
-      socketRef.current.off('kicked');
+    // 컴포넌트 마운트시에 항상 상태를 초기화
+    hasJoinedRef.current = false;
+    receivedRoomInfoRef.current = false;
+    
+    // 기존 이벤트 리스너 모두 제거
+    cleanupComponent();
 
-      // 이벤트 리스너 재설정
-      socketRef.current.on('roomInfo', (roomData) => {
-        console.log(`roomInfo 이벤트 수신: ${roomData.title}, 플레이어 수: ${roomData.players.length}`);
-        setRoom(roomData);
-        setPlayers(roomData.players.filter(p => p.status !== 'SPECTATING'));
-        setSpectators(roomData.players.filter(p => p.status === 'SPECTATING'));
-        
-        // 플레이어 상태 확인
-        const player = roomData.players.find(p => p.nickname === nickname);
-        if (player) {
-          setIsReady(player.status === 'READY');
-          setIsSpectator(player.status === 'SPECTATING');
-        }
-        
-        // 방 설정 폼 초기화
-        setSettingsForm({
-          title: roomData.title,
-          maxPlayers: roomData.maxPlayers,
-          gameType: roomData.gameType,
-          password: roomData.hasPassword ? '********' : ''
-        });
-      });
-
-      socketRef.current.on('error', ({ message }) => {
-        toast.error(message);
-        navigate('/');
-      });
-
-      socketRef.current.on('chatMessage', (message) => {
-        if (message.roomId === roomId) {
-          // 메시지의 고유 ID 생성 (타입 + 내용 + 타임스탬프 조합)
-          const messageId = `${message.type}-${message.message}-${message.timestamp}`;
-          
-          // 타임스탬프 포맷팅 (로그용)
-          const timestamp = new Date(message.timestamp);
-          const formattedTime = `${timestamp.getHours().toString().padStart(2, '0')}:${timestamp.getMinutes().toString().padStart(2, '0')}:${timestamp.getSeconds().toString().padStart(2, '0')}:${timestamp.getMilliseconds().toString().padStart(3, '0')}`;
-          
-          // 현재 시간 (로그용)
-          const now = new Date();
-          const nowFormatted = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}:${now.getSeconds().toString().padStart(2, '0')}:${now.getMilliseconds().toString().padStart(3, '0')}`;
-          
-          // 이미 표시된 메시지인지 확인
-          if (!messageIds.has(messageId)) {
-            // 새 메시지 ID 목록에 추가
-            setMessageIds(prev => {
-              const newIds = new Set(prev);
-              newIds.add(messageId);
-              return newIds;
-            });
-            
-            // 메시지 목록에 추가
-            setMessages(prev => [...prev, message]);
-            
-            console.log(`[${nowFormatted}] 메시지 수신 (메시지 시간: ${formattedTime}): ${message.type} - ${message.message}`);
-          } else {
-            console.log(`[${nowFormatted}] 중복 메시지 필터링 (메시지 시간: ${formattedTime}): ${message.type} - ${message.message}`);
-          }
-        }
+    // 소켓 이벤트 리스너 설정
+    console.log('이벤트 리스너 설정 중...');
+    
+    // roomInfo 이벤트 - 방 정보 수신 시
+    socket.on('roomInfo', (roomData) => {
+      console.log(`roomInfo 이벤트 수신: ${roomData.title}, 플레이어 수: ${roomData.players.length}`);
+      
+      // 방 정보 수신 표시
+      receivedRoomInfoRef.current = true;
+      
+      // 방 정보 상태 업데이트
+      setRoom(roomData);
+      setPlayers(roomData.players.filter(p => p.status !== 'SPECTATING'));
+      setSpectators(roomData.players.filter(p => p.status === 'SPECTATING'));
+      
+      // 플레이어 상태 확인
+      const player = roomData.players.find(p => p.nickname === nickname);
+      if (player) {
+        setIsReady(player.status === 'READY');
+        setIsSpectator(player.status === 'SPECTATING');
+      }
+      
+      // 방 설정 폼 초기화
+      setSettingsForm({
+        title: roomData.title,
+        maxPlayers: roomData.maxPlayers,
+        gameType: roomData.gameType,
+        password: roomData.hasPassword ? '********' : ''
       });
       
-      socketRef.current.on('chatHistory', ({ messages, skipMessage }) => {
+      // 방 정보를 받았으므로 로딩 상태 비활성화
+      setIsLoading(false);
+      
+      // 타임아웃 해제
+      if (timeoutIdRef.current) {
+        clearTimeout(timeoutIdRef.current);
+        timeoutIdRef.current = null;
+      }
+    });
+
+    // error 이벤트 - 오류 발생 시
+    socket.on('error', ({ message }) => {
+      toast.error(message);
+      // 오류 발생 시 로딩 상태 비활성화
+      setIsLoading(false);
+      
+      // 타임아웃 해제
+      if (timeoutIdRef.current) {
+        clearTimeout(timeoutIdRef.current);
+        timeoutIdRef.current = null;
+      }
+      
+      navigate('/');
+    });
+
+    socket.on('chatMessage', (message) => {
+      if (message.roomId === roomId) {
+        // 메시지의 고유 ID 생성 (타입 + 내용 + 타임스탬프 조합)
+        const messageId = `${message.type}-${message.message}-${message.timestamp}`;
+        
+        // 타임스탬프 포맷팅 (로그용)
+        const timestamp = new Date(message.timestamp);
+        const formattedTime = `${timestamp.getHours().toString().padStart(2, '0')}:${timestamp.getMinutes().toString().padStart(2, '0')}:${timestamp.getSeconds().toString().padStart(2, '0')}:${timestamp.getMilliseconds().toString().padStart(3, '0')}`;
+        
+        // 현재 시간 (로그용)
         const now = new Date();
         const nowFormatted = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}:${now.getSeconds().toString().padStart(2, '0')}:${now.getMilliseconds().toString().padStart(3, '0')}`;
         
-        console.log(`[${nowFormatted}] 채팅 히스토리 수신: ${messages.length}개 메시지, 건너뛸 메시지 ID: ${skipMessage}`);
-        
-        // 새로운 메시지 ID Set 생성
-        const newMessageIds = new Set();
-        
-        // 메시지 필터링 전 추가 로그
-        if (skipMessage) {
-          console.log(`[${nowFormatted}] 채팅 히스토리에서 제외할 메시지 ID: ${skipMessage}`);
+        // 이미 표시된 메시지인지 확인
+        if (!messageIds.has(messageId)) {
+          // 새 메시지 ID 목록에 추가
+          setMessageIds(prev => {
+            const newIds = new Set(prev);
+            newIds.add(messageId);
+            return newIds;
+          });
+          
+          // 메시지 목록에 추가
+          setMessages(prev => [...prev, message]);
+          
+          console.log(`[${nowFormatted}] 메시지 수신 (메시지 시간: ${formattedTime}): ${message.type} - ${message.message}`);
+        } else {
+          console.log(`[${nowFormatted}] 중복 메시지 필터링 (메시지 시간: ${formattedTime}): ${message.type} - ${message.message}`);
         }
+      }
+    });
+    
+    socket.on('chatHistory', ({ messages, skipMessage }) => {
+      const now = new Date();
+      const nowFormatted = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}:${now.getSeconds().toString().padStart(2, '0')}:${now.getMilliseconds().toString().padStart(3, '0')}`;
+      
+      console.log(`[${nowFormatted}] 채팅 히스토리 수신: ${messages.length}개 메시지, 건너뛸 메시지 ID: ${skipMessage}`);
+      
+      // 새로운 메시지 ID Set 생성
+      const newMessageIds = new Set();
+      
+      // 메시지 필터링 전 추가 로그
+      if (skipMessage) {
+        console.log(`[${nowFormatted}] 채팅 히스토리에서 제외할 메시지 ID: ${skipMessage}`);
+      }
+      
+      // 자신의 입장 메시지 필터링을 위한 정규식
+      const joinPattern = new RegExp(`${nickname}님이 입장하셨습니다`);
+      
+      // 중복 메시지 필터링하여 표시 (skipMessage 제외)
+      const uniqueMessages = messages.filter(msg => {
+        const messageId = `${msg.type}-${msg.message}-${msg.timestamp}`;
+        const msgTimestamp = new Date(msg.timestamp);
+        const msgFormatted = `${msgTimestamp.getHours().toString().padStart(2, '0')}:${msgTimestamp.getMinutes().toString().padStart(2, '0')}:${msgTimestamp.getSeconds().toString().padStart(2, '0')}:${msgTimestamp.getMilliseconds().toString().padStart(3, '0')}`;
         
-        // 자신의 입장 메시지 필터링을 위한 정규식
-        const joinPattern = new RegExp(`${nickname}님이 입장하셨습니다`);
-        
-        // 중복 메시지 필터링하여 표시 (skipMessage 제외)
-        const uniqueMessages = messages.filter(msg => {
-          const messageId = `${msg.type}-${msg.message}-${msg.timestamp}`;
-          const msgTimestamp = new Date(msg.timestamp);
-          const msgFormatted = `${msgTimestamp.getHours().toString().padStart(2, '0')}:${msgTimestamp.getMinutes().toString().padStart(2, '0')}:${msgTimestamp.getSeconds().toString().padStart(2, '0')}:${msgTimestamp.getMilliseconds().toString().padStart(3, '0')}`;
-          
-          // skipMessage와 일치하는 메시지는 제외 (방금 입장한 본인 메시지)
-          if (skipMessage === messageId) {
-            console.log(`[${nowFormatted}] 건너뛰기 - skipMessage 일치 (${msgFormatted}): ${msg.message}`);
-            return false;
-          }
-          
-          // 시스템 메시지이고 자신의 입장 메시지인 경우 (추가 필터링)
-          if (msg.type === 'system' && joinPattern.test(msg.message)) {
-            console.log(`[${nowFormatted}] 건너뛰기 - 본인 입장 메시지 패턴 일치 (${msgFormatted}): ${msg.message}`);
-            return false;
-          }
-          
-          // 이미 표시된 메시지 ID인지 확인 (기존 state와 비교)
-          if (messageIds.has(messageId)) {
-            console.log(`[${nowFormatted}] 건너뛰기 - 기존 상태에 이미 존재 (${msgFormatted}): ${msg.message}`);
-            return false;
-          }
-          
-          // 이번 batch 내에서 중복 메시지 필터링
-          if (!newMessageIds.has(messageId)) {
-            newMessageIds.add(messageId);
-            console.log(`[${nowFormatted}] 히스토리 표시 (${msgFormatted}): ${msg.type} - ${msg.message}`);
-            return true;
-          }
-          
-          console.log(`[${nowFormatted}] 히스토리 중복 필터링 (${msgFormatted}): ${msg.type} - ${msg.message}`);
+        // skipMessage와 일치하는 메시지는 제외 (방금 입장한 본인 메시지)
+        if (skipMessage === messageId) {
+          console.log(`[${nowFormatted}] 건너뛰기 - skipMessage 일치 (${msgFormatted}): ${msg.message}`);
           return false;
-        });
-        
-        console.log(`[${nowFormatted}] 필터링 결과: ${messages.length}개 메시지 중 ${uniqueMessages.length}개 표시`);
-        
-        // 기존 메시지와 새 메시지 병합 (한번에 상태 업데이트)
-        setMessages(prev => {
-          // 기존 메시지 ID 집합에 새로운 메시지 ID 추가
-          const combinedIds = new Set(messageIds);
-          uniqueMessages.forEach(msg => {
-            const msgId = `${msg.type}-${msg.message}-${msg.timestamp}`;
-            combinedIds.add(msgId);
-          });
-          
-          // 메시지 ID 상태 업데이트
-          setMessageIds(combinedIds);
-          
-          // 중복 없이 메시지 병합
-          const combinedMessages = [...prev];
-          uniqueMessages.forEach(newMsg => {
-            const newMsgId = `${newMsg.type}-${newMsg.message}-${newMsg.timestamp}`;
-            
-            // 이미 있는 메시지는 추가하지 않음
-            const exists = prev.some(existingMsg => 
-              `${existingMsg.type}-${existingMsg.message}-${existingMsg.timestamp}` === newMsgId
-            );
-            
-            if (!exists) {
-              combinedMessages.push(newMsg);
-            }
-          });
-          
-          return combinedMessages;
-        });
-      });
-
-      socketRef.current.on('playerJoined', (updatedPlayers) => {
-        setPlayers(updatedPlayers.filter(p => p.status !== 'SPECTATING'));
-        setSpectators(updatedPlayers.filter(p => p.status === 'SPECTATING'));
-      });
-
-      socketRef.current.on('playerLeft', (updatedPlayers) => {
-        setPlayers(updatedPlayers.filter(p => p.status !== 'SPECTATING'));
-        setSpectators(updatedPlayers.filter(p => p.status === 'SPECTATING'));
-      });
-      
-      socketRef.current.on('playerStatusChanged', (updatedPlayers) => {
-        setPlayers(updatedPlayers.filter(p => p.status !== 'SPECTATING'));
-        setSpectators(updatedPlayers.filter(p => p.status === 'SPECTATING'));
-        
-        // 내 상태 업데이트
-        const player = updatedPlayers.find(p => p.nickname === nickname);
-        if (player) {
-          setIsReady(player.status === 'READY');
-          setIsSpectator(player.status === 'SPECTATING');
-        }
-      });
-      
-      socketRef.current.on('roomSettingsUpdated', (updatedRoom) => {
-        // 방 설정 업데이트
-        setRoom(prev => ({ ...prev, ...updatedRoom }));
-        
-        // 방 설정 폼 업데이트
-        setSettingsForm({
-          title: updatedRoom.title,
-          maxPlayers: updatedRoom.maxPlayers,
-          gameType: updatedRoom.gameType,
-          password: updatedRoom.hasPassword ? '********' : ''
-        });
-        
-        toast.success('방 설정이 변경되었습니다.');
-      });
-      
-      socketRef.current.on('kicked', ({ message }) => {
-        const now = new Date();
-        const nowFormatted = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}:${now.getSeconds().toString().padStart(2, '0')}:${now.getMilliseconds().toString().padStart(3, '0')}`;
-        
-        console.log(`[${nowFormatted}] 추방됨: ${message}`);
-        toast.error(message);
-        
-        // 소켓 연결 종료 처리
-        if (socketRef.current && !socketRef.current.disconnected) {
-          console.log(`[${nowFormatted}] 추방으로 인한 소켓 연결 종료`);
-          socketRef.current.disconnect();
         }
         
-        // 추방된 사용자를 로비로 이동시킴 (루트 경로)
-        navigate('/');
+        // 시스템 메시지이고 자신의 입장 메시지인 경우 (추가 필터링)
+        if (msg.type === 'system' && joinPattern.test(msg.message)) {
+          console.log(`[${nowFormatted}] 건너뛰기 - 본인 입장 메시지 패턴 일치 (${msgFormatted}): ${msg.message}`);
+          return false;
+        }
+        
+        // 이미 표시된 메시지 ID인지 확인 (기존 state와 비교)
+        if (messageIds.has(messageId)) {
+          console.log(`[${nowFormatted}] 건너뛰기 - 기존 상태에 이미 존재 (${msgFormatted}): ${msg.message}`);
+          return false;
+        }
+        
+        // 이번 batch 내에서 중복 메시지 필터링
+        if (!newMessageIds.has(messageId)) {
+          newMessageIds.add(messageId);
+          console.log(`[${nowFormatted}] 히스토리 표시 (${msgFormatted}): ${msg.type} - ${msg.message}`);
+          return true;
+        }
+        
+        console.log(`[${nowFormatted}] 히스토리 중복 필터링 (${msgFormatted}): ${msg.type} - ${msg.message}`);
+        return false;
       });
-    };
+      
+      console.log(`[${nowFormatted}] 필터링 결과: ${messages.length}개 메시지 중 ${uniqueMessages.length}개 표시`);
+      
+      // 기존 메시지와 새 메시지 병합 (한번에 상태 업데이트)
+      setMessages(prev => {
+        // 기존 메시지 ID 집합에 새로운 메시지 ID 추가
+        const combinedIds = new Set(messageIds);
+        uniqueMessages.forEach(msg => {
+          const msgId = `${msg.type}-${msg.message}-${msg.timestamp}`;
+          combinedIds.add(msgId);
+        });
+        
+        // 메시지 ID 상태 업데이트
+        setMessageIds(combinedIds);
+        
+        // 중복 없이 메시지 병합
+        const combinedMessages = [...prev];
+        uniqueMessages.forEach(newMsg => {
+          const newMsgId = `${newMsg.type}-${newMsg.message}-${newMsg.timestamp}`;
+          
+          // 이미 있는 메시지는 추가하지 않음
+          const exists = prev.some(existingMsg => 
+            `${existingMsg.type}-${existingMsg.message}-${existingMsg.timestamp}` === newMsgId
+          );
+          
+          if (!exists) {
+            combinedMessages.push(newMsg);
+          }
+        });
+        
+        return combinedMessages;
+      });
+    });
 
-    // 이벤트 리스너 설정
-    setupEventListeners();
+    socket.on('playerJoined', (updatedPlayers) => {
+      setPlayers(updatedPlayers.filter(p => p.status !== 'SPECTATING'));
+      setSpectators(updatedPlayers.filter(p => p.status === 'SPECTATING'));
+    });
+
+    socket.on('playerLeft', (updatedPlayers) => {
+      setPlayers(updatedPlayers.filter(p => p.status !== 'SPECTATING'));
+      setSpectators(updatedPlayers.filter(p => p.status === 'SPECTATING'));
+    });
+    
+    socket.on('playerStatusChanged', (updatedPlayers) => {
+      setPlayers(updatedPlayers.filter(p => p.status !== 'SPECTATING'));
+      setSpectators(updatedPlayers.filter(p => p.status === 'SPECTATING'));
+      
+      // 내 상태 업데이트
+      const player = updatedPlayers.find(p => p.nickname === nickname);
+      if (player) {
+        setIsReady(player.status === 'READY');
+        setIsSpectator(player.status === 'SPECTATING');
+      }
+    });
+    
+    socket.on('roomSettingsUpdated', (updatedRoom) => {
+      // 방 설정 업데이트
+      setRoom(prev => ({ ...prev, ...updatedRoom }));
+      
+      // 방 설정 폼 업데이트
+      setSettingsForm({
+        title: updatedRoom.title,
+        maxPlayers: updatedRoom.maxPlayers,
+        gameType: updatedRoom.gameType,
+        password: updatedRoom.hasPassword ? '********' : ''
+      });
+      
+      toast.success('방 설정이 변경되었습니다.');
+    });
+    
+    socket.on('kicked', ({ message }) => {
+      const now = new Date();
+      const nowFormatted = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}:${now.getSeconds().toString().padStart(2, '0')}:${now.getMilliseconds().toString().padStart(3, '0')}`;
+      
+      console.log(`[${nowFormatted}] 추방됨: ${message}`);
+      toast.error(message);
+      
+      // 소켓 연결 종료 처리
+      if (socket && !socket.disconnected) {
+        console.log(`[${nowFormatted}] 추방으로 인한 소켓 연결 종료`);
+        socket.disconnect();
+      }
+      
+      // 추방된 사용자를 로비로 이동시킴 (루트 경로)
+      navigate('/');
+    });
 
     // 방 참가 요청 (한 번만 실행되도록 함)
     if (!hasJoinedRef.current) {
-      console.log(`joinRoom 이벤트 발송: roomId=${roomId}, nickname=${nickname}`);
-      socketRef.current.emit('joinRoom', { roomId, nickname });
-      hasJoinedRef.current = true; // 참가 완료 플래그 설정
-    } else {
-      console.log(`이미 방에 참가했으므로 joinRoom 이벤트를 다시 발송하지 않습니다`);
+      console.log(`joinRoom 이벤트 발송: roomId=${roomId}, nickname=${nickname}, userId=${userId}`);
+      
+      // 방 참가 요청 보내기 전에 flag 업데이트 (중복 요청 방지)
+      hasJoinedRef.current = true;
+      
+      // 방 참가 요청 전송
+      socket.emit('joinRoom', { roomId, nickname, userId });
+      
+      // 타임아웃 설정 - 5초 후에도 roomInfo를 수신하지 못하면 오류 처리
+      timeoutIdRef.current = setTimeout(() => {
+        if (!receivedRoomInfoRef.current) {
+          console.log('방 입장 타임아웃: 서버 응답 없음');
+          setIsLoading(false);
+          toast.error('방 입장 중 오류가 발생했습니다. 다시 시도해주세요.');
+          navigate('/');
+        }
+      }, 5000);
     }
 
-    // 클린업
-    return () => {
-      console.log('Room 컴포넌트 언마운트 - 소켓 연결 종료');
-      // 컴포넌트가 언마운트될 때만 소켓 연결 종료
-      if (socketRef.current && !socketRef.current.disconnected) {
-        socketRef.current.disconnect();
-      }
-    };
-  }, []); // 의존성 배열을 비워서 한 번만 실행되도록 함
-
-  // roomId나 nickname이 변경되면 방 재접속 처리
-  useEffect(() => {
-    // 이전에 다른 방에 접속했었다면 재접속 처리
-    if (hasJoinedRef.current && socketRef.current && socketRef.current.connected) {
-      console.log(`방 정보 변경 감지 - 재접속: roomId=${roomId}, nickname=${nickname}`);
-      
-      // 기존 참가 플래그 초기화
-      hasJoinedRef.current = false;
-      
-      // 소켓 재연결
-      socketRef.current.disconnect();
-      
-      // 실제 컴포넌트 리렌더링을 통해 첫 번째 useEffect가 다시 실행되도록 함
-      setTimeout(() => {
-        socketRef.current.connect();
-      }, 100);
-    }
-  }, [roomId, nickname]);
+    // 컴포넌트 언마운트 시 정리 작업
+    return cleanupComponent;
+  }, [socket, userId, roomId, nickname, navigate, cleanupComponent]); // 의존성 배열에 cleanupComponent 추가
 
   // 새 메시지가 추가될 때마다 스크롤을 아래로 이동
   useEffect(() => {
@@ -348,57 +388,51 @@ function Room({ nickname }) {
   const handleLeave = () => {
     console.log('방 나가기 버튼 클릭됨, roomId:', roomId, 'nickname:', nickname);
     
+    // 퇴장 처리 중 플래그를 true로 설정
+    setIsLoading(true);
+    
     try {
       // 명시적으로 서버에 퇴장 알림
-      socketRef.current.emit('leaveRoom');
-      console.log('leaveRoom 이벤트 전송 완료');
+      if (socket && socket.connected) {
+        socket.emit('leaveRoom');
+        console.log('leaveRoom 이벤트 전송 완료');
+      }
       
-      // 잠시 대기 후 소켓 연결 종료 (서버가 메시지를 처리할 시간 확보)
-      setTimeout(() => {
-        try {
-          // 소켓이 아직 연결되어 있을 경우만 연결 종료
-          if (socketRef.current && !socketRef.current.disconnected) {
-            // 소켓 연결 종료
-            socketRef.current.disconnect();
-            console.log('소켓 연결 종료 완료');
-          }
-          
-          // 로비로 이동
-          navigate('/');
-        } catch (error) {
-          console.error('소켓 연결 종료 중 오류:', error);
-          // 오류가 발생해도 로비로 이동
-          navigate('/');
-        }
-      }, 300); // 시간을 약간 늘려서 서버가 처리할 시간 확보
+      // 참가 상태 및 방 정보 수신 상태 초기화
+      hasJoinedRef.current = false;
+      receivedRoomInfoRef.current = false;
+      
+      // 이벤트 리스너 정리
+      cleanupComponent();
+      
+      // 로비로 이동
+      navigate('/');
     } catch (error) {
       console.error('방 나가기 처리 중 오류:', error);
+      
       // 오류가 발생해도 로비로 이동
-      if (socketRef.current && !socketRef.current.disconnected) {
-        socketRef.current.disconnect();
-      }
       navigate('/');
     }
   };
 
-  const sendMessage = (e) => {
+  const handleSendMessage = (e) => {
     e.preventDefault();
-    if (inputMessage.trim()) {
-      socketRef.current.emit('sendMessage', {
-        roomId,
-        nickname,
-        message: inputMessage
-      });
+    if (inputMessage.trim() && socket) {
+      socket.emit('sendMessage', { roomId, nickname, message: inputMessage, userId });
       setInputMessage('');
     }
   };
   
   const toggleReady = () => {
-    socketRef.current.emit('toggleReady');
+    if (socket) {
+      socket.emit('toggleReady', { roomId, userId });
+    }
   };
   
   const toggleSpectator = () => {
-    socketRef.current.emit('toggleSpectator');
+    if (socket) {
+      socket.emit('toggleSpectator', { roomId, userId });
+    }
   };
   
   const handleKickPlayer = (targetNickname) => {
@@ -412,7 +446,7 @@ function Room({ nickname }) {
     console.log('추방 확인 버튼 클릭됨:', kickConfirm.nickname);
     if (kickConfirm.nickname) {
       // 서버에 추방 요청 전송
-      socketRef.current.emit('kickPlayer', {
+      socket.emit('kickPlayer', {
         roomId,
         targetNickname: kickConfirm.nickname
       });
@@ -443,7 +477,7 @@ function Room({ nickname }) {
     // 비밀번호가 변경되었는지 확인
     const passwordChanged = settingsForm.password !== '********';
     
-    socketRef.current.emit('updateRoomSettings', {
+    socket.emit('updateRoomSettings', {
       roomId,
       settings: {
         title: settingsForm.title,
@@ -497,6 +531,18 @@ function Room({ nickname }) {
   useEffect(() => {
     console.log('kickConfirm 상태 변경됨:', kickConfirm);
   }, [kickConfirm]);
+
+  // 로딩 상태 표시 컴포넌트
+  if (isLoading) {
+    return (
+      <div className="loading-container">
+        <div className="spinner-border text-primary" role="status">
+          <span className="visually-hidden">로딩 중...</span>
+        </div>
+        <p className="mt-3">방에 입장하는 중...</p>
+      </div>
+    );
+  }
 
   if (!room) {
     return (
@@ -701,7 +747,7 @@ function Room({ nickname }) {
                 </div>
                 <form 
                   className="chat-input-form"
-                  onSubmit={sendMessage}
+                  onSubmit={handleSendMessage}
                 >
                   <input
                     type="text"

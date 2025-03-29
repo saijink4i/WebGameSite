@@ -1,18 +1,25 @@
-import React, { createContext, useState, useEffect } from 'react';
+import React, { createContext, useState, useEffect, useContext } from 'react';
 import io from 'socket.io-client';
+import { UserContext } from './UserContext';
 
 const SocketContext = createContext(null);
 
 export const SocketProvider = ({ children }) => {
   const [socket, setSocket] = useState(null);
+  const { userId } = useContext(UserContext);
 
+  // userId가 로드된 후에만 소켓 연결 생성
   useEffect(() => {
-    // 소켓 연결 생성
-    const newSocket = io('http://localhost:3001');
+    if (!userId) return;
+
+    // userId를 쿼리 파라미터로 전달하여 소켓 연결 생성
+    const newSocket = io('http://localhost:3001', {
+      query: { userId }
+    });
     
     // 소켓 연결 이벤트 로깅
     newSocket.on('connect', () => {
-      console.log('소켓 서버에 연결되었습니다.');
+      console.log(`소켓 서버에 연결되었습니다. (userId: ${userId}, socketId: ${newSocket.id})`);
     });
     
     newSocket.on('disconnect', () => {
@@ -29,7 +36,7 @@ export const SocketProvider = ({ children }) => {
     return () => {
       newSocket.disconnect();
     };
-  }, []);
+  }, [userId]);
 
   return (
     <SocketContext.Provider value={socket}>

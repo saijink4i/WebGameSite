@@ -1,18 +1,23 @@
 import React, { createContext, useState, useEffect } from 'react';
+import { v4 as uuidv4 } from 'uuid';
 
 const UserContext = createContext({
   user: null,
   setUser: () => {},
   isLoggedIn: false,
   login: () => {},
-  logout: () => {}
+  logout: () => {},
+  updateUser: () => {},
+  userId: null
 });
 
 export const UserProvider = ({ children }) => {
   const [user, setUser] = useState(null);
+  const [userId, setUserId] = useState(null);
   
-  // 로컬 스토리지에서 사용자 정보 불러오기
+  // 로컬 스토리지에서 사용자 정보와 고유 ID 불러오기
   useEffect(() => {
+    // 사용자 정보 로드
     const storedUser = localStorage.getItem('user');
     if (storedUser) {
       try {
@@ -22,6 +27,14 @@ export const UserProvider = ({ children }) => {
         localStorage.removeItem('user');
       }
     }
+    
+    // 고유 사용자 ID 로드 또는 생성
+    let storedUserId = localStorage.getItem('userId');
+    if (!storedUserId) {
+      storedUserId = uuidv4();
+      localStorage.setItem('userId', storedUserId);
+    }
+    setUserId(storedUserId);
   }, []);
   
   // 로그인 함수
@@ -34,6 +47,7 @@ export const UserProvider = ({ children }) => {
   const logout = () => {
     setUser(null);
     localStorage.removeItem('user');
+    // userId는 유지합니다 - 브라우저/디바이스마다 고유한 식별자로 사용
   };
   
   // 사용자 정보 업데이트 함수
@@ -51,7 +65,8 @@ export const UserProvider = ({ children }) => {
         isLoggedIn: !!user, 
         login, 
         logout,
-        updateUser
+        updateUser,
+        userId
       }}
     >
       {children}

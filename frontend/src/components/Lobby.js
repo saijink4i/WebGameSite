@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import axios from 'axios';
 import { FaLock, FaUser, FaDice, FaPlayCircle } from 'react-icons/fa';
+import { toast } from 'react-toastify';
 
 // axios 기본 설정 추가
 axios.defaults.maxContentLength = Infinity;
@@ -179,6 +180,44 @@ function CreateRoomModal({ onClose, onCreate }) {
   );
 }
 
+function PasswordModal({ room, onSubmit, onClose }) {
+  const [password, setPassword] = useState('');
+
+  const handleSubmit = (e) => {
+    e.preventDefault();
+    onSubmit(password);
+  };
+
+  return (
+    <div className="modal-overlay">
+      <div className="modal-content bg-white p-4 rounded-3">
+        <h2 className="mb-4">비밀번호 입력</h2>
+        <p><strong>{room.title}</strong> 방에 입장하기 위한 비밀번호를 입력하세요.</p>
+        <form onSubmit={handleSubmit}>
+          <div className="mb-3">
+            <label className="form-label">비밀번호</label>
+            <input
+              type="password"
+              className="form-control"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              placeholder="비밀번호를 입력하세요"
+              required
+              autoFocus
+            />
+          </div>
+          <div className="d-flex justify-content-end gap-2">
+            <button type="submit" className="btn btn-primary">입장</button>
+            <button type="button" className="btn btn-secondary" onClick={onClose}>
+              취소
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
 function FilterBar({ filters, onFilterChange }) {
   const handleGameTypeChange = (e) => {
     onFilterChange(FILTER_TYPES.GAME, e.target.value || null);
@@ -260,65 +299,140 @@ function FilterBar({ filters, onFilterChange }) {
   );
 }
 
-function Lobby({ nickname: initialNickname, setNickname }) {
+function Lobby({ nickname: initialNickname, setNickname, userId }) {
   const [rooms, setRooms] = useState([]);
-  const [showCreateModal, setShowCreateModal] = useState(false);
   const [showNicknameModal, setShowNicknameModal] = useState(!initialNickname);
-  const [nickname, setLocalNickname] = useState(initialNickname);
+  const [showCreateRoomModal, setShowCreateRoomModal] = useState(false);
+  const [passwordInput, setPasswordInput] = useState("");
+  const [selectedRoom, setSelectedRoom] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [nickname, setLocalNickname] = useState(initialNickname || '');
+  const [filters, setFilters] = useState({
+    gameType: null,
+    joinableOnly: false,
+    locked: 'all',
+    status: null
+  });
   const navigate = useNavigate();
-  const [filters, setFilters] = useState({});
-
+  
+  // userId 값이 변경될 때 로그 출력
   useEffect(() => {
-    fetchRooms();
-    const interval = setInterval(fetchRooms, 3000);
-    return () => clearInterval(interval);
-  }, []);
+    console.log(`Lobby에 전달된 userId: ${userId}`);
+  }, [userId]);
 
+  // 컴포넌트 마운트 시 방 목록 로드 및 주기적 업데이트
+  useEffect(() => {
+    console.log("방 목록 로드 시작");
+    // 초기 로드
+    fetchRooms();
+    
+    // 주기적 업데이트 설정 (3초마다)
+    const interval = setInterval(() => {
+      fetchRooms();
+    }, 3000);
+    
+    // 컴포넌트 언마운트 시 인터벌 정리
+    return () => {
+      console.log("방 목록 로드 정리");
+      clearInterval(interval);
+    };
+  }, []); // 빈 의존성 배열: 컴포넌트 마운트 시 한 번만 실행
+
+  // 방 목록 가져오기
   const fetchRooms = async () => {
     try {
+      setLoading(true);
       const response = await axios.get('/api/rooms');
+      console.log("방 목록 가져오기 성공:", response.data);
       setRooms(response.data);
     } catch (error) {
-      console.error('방 목록을 가져오는데 실패했습니다:', error);
+      console.error('방 목록 가져오기 오류:', error);
+    } finally {
+      setLoading(false);
     }
   };
 
+  // 닉네임 변경 처리
   const handleNicknameChange = (newNickname) => {
-    sessionStorage.setItem('nickname', newNickname);
     setLocalNickname(newNickname);
-    setNickname(newNickname);
+    setNickname(newNickname); // 부모 컴포넌트에 설정
+    sessionStorage.setItem('nickname', newNickname);
     setShowNicknameModal(false);
   };
 
+  // 방 생성
   const createRoom = async (roomData) => {
+    if (!nickname) {
+      setShowNicknameModal(true);
+      return;
+    }
+    
     try {
+      setLoading(true);
       const response = await axios.post('/api/rooms', {
         creator: nickname,
-        title: roomData.title,
-        maxPlayers: roomData.maxPlayers,
-        password: roomData.password,
-        gameType: roomData.gameType
+        title: roomData.title || `${nickname}의 방`,
+        maxPlayers: roomData.maxPlayers || 4,
+        password: roomData.password || null,
+        gameType: roomData.gameType || GAME_TYPES.ZOMBIE_DICE,
+        userId: userId // 사용자 ID 추가
       });
-      setShowCreateModal(false);
+      
+      setShowCreateRoomModal(false);
       navigate(`/room/${response.data.roomId}`);
     } catch (error) {
-      console.error('방 생성에 실패했습니다:', error);
+      console.error('방 생성 오류:', error);
+      setLoading(false);
     }
   };
-
+  
+  // 방 입장
   const joinRoom = async (room) => {
-    if (room.hasPassword) {
-      const password = prompt('비밀번호를 입력하세요:');
-      if (!password) return;
-      
-      try {
-        await axios.post(`/api/rooms/${room.id}/check-password`, { password });
-      } catch (error) {
-        alert('비밀번호가 일치하지 않습니다.');
-        return;
-      }
+    if (!nickname) {
+      setShowNicknameModal(true);
+      return;
     }
-    navigate(`/room/${room.id}`);
+    
+    // 비밀번호 필요한 방인 경우
+    if (room.hasPassword && !selectedRoom) {
+      setSelectedRoom(room);
+      setPasswordInput("");
+      return;
+    }
+    
+    try {
+      // 로딩 상태 활성화 (입장 시도 중)
+      setLoading(true);
+      
+      // 비밀번호 검증 요청 (필요한 경우)
+      if (room.hasPassword && passwordInput) {
+        const validateResponse = await axios.post('/api/rooms/validate-password', {
+          roomId: room.id,
+          password: passwordInput,
+          userId: userId // 사용자 ID 추가
+        });
+        
+        if (!validateResponse.data.valid) {
+          toast.error('비밀번호가 일치하지 않습니다.');
+          setLoading(false);
+          return;
+        }
+      }
+      
+      // 세션 스토리지에 최근 방문한 방 ID 저장 (디버깅 용도)
+      const previousRoomId = sessionStorage.getItem('lastRoomId');
+      if (previousRoomId) {
+        console.log(`이전에 방문한 방 ID: ${previousRoomId}, 새로 입장하는 방 ID: ${room.id}`);
+      }
+      sessionStorage.setItem('lastRoomId', room.id);
+      
+      // 방으로 이동
+      navigate(`/room/${room.id}`);
+    } catch (error) {
+      console.error('방 입장 오류:', error);
+      toast.error('방 입장 중 오류가 발생했습니다.');
+      setLoading(false);
+    }
   };
 
   // 닉네임이 없는 경우 방 생성과 참가를 막기 위해 조건 추가
@@ -362,6 +476,21 @@ function Lobby({ nickname: initialNickname, setNickname }) {
     });
   };
 
+  // 비밀번호 입력 후 방 입장
+  const handlePasswordSubmit = (password) => {
+    if (selectedRoom) {
+      setPasswordInput(password);
+      joinRoom(selectedRoom);
+      setSelectedRoom(null);
+    }
+  };
+
+  // 비밀번호 모달 닫기
+  const handleClosePasswordModal = () => {
+    setSelectedRoom(null);
+    setPasswordInput("");
+  };
+
   return (
     <div className="container py-4">
       <div className="d-flex justify-content-between align-items-center mb-4">
@@ -380,7 +509,7 @@ function Lobby({ nickname: initialNickname, setNickname }) {
       <div className="mb-4">
         <button 
           className="btn btn-primary"
-          onClick={() => setShowCreateModal(true)}
+          onClick={() => setShowCreateRoomModal(true)}
           disabled={!canInteract}
         >
           방 만들기
@@ -425,9 +554,9 @@ function Lobby({ nickname: initialNickname, setNickname }) {
         )}
       </div>
 
-      {showCreateModal && (
+      {showCreateRoomModal && (
         <CreateRoomModal
-          onClose={() => setShowCreateModal(false)}
+          onClose={() => setShowCreateRoomModal(false)}
           onCreate={createRoom}
         />
       )}
@@ -438,6 +567,14 @@ function Lobby({ nickname: initialNickname, setNickname }) {
           onSubmit={handleNicknameChange}
           onClose={() => setShowNicknameModal(false)}
           canClose={Boolean(nickname)}
+        />
+      )}
+
+      {selectedRoom && (
+        <PasswordModal
+          room={selectedRoom}
+          onSubmit={handlePasswordSubmit}
+          onClose={handleClosePasswordModal}
         />
       )}
     </div>
